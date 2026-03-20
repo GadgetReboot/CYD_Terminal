@@ -1,12 +1,13 @@
 # CYD_Terminal
 Cheap Yellow Display (CYD) Serial Terminal<br><br>
-<br><br>![PCB](CYD_Front.jpg)<BR><BR>
-<br><br>![PCB](CYD_Back.jpg)<BR><BR>
+
 This project was modified from the original at https://github.com/CheshirCa/CYD_terminal <br>
 It was changed as needed to use the ILI9341 display instead of ST7789 and to
 allow different SPI pins for the display driver and the touch interface controller.<br>
 The original project assumed both were using the same SPI bus
-<br><br>
+
+<br><br>![PCB](CYD_Front.jpg)<BR><BR>
+<br><br>![PCB](CYD_Back.jpg)<BR><BR>
 
 There are several different versions of the CYD.<br>
 The one used in this project has a 2.8" display and uses the ILI9341 display driver. <br><br>
