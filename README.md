@@ -12,12 +12,12 @@ The original project assumed both were using the same SPI bus
 There are several different versions of the CYD.<br>
 The one used in this project has a 2.8" display and uses the ILI9341 display driver. <br><br>
 
-To use:<br><br>
+To use:<br>
 
 Make sure the TFT_eSPI library is installed in the Arduino IDE.<br><br>
 
 Copy the file User_Setup_CYD_ILI9341.h from the sketch folder to the Arduino library folder where TFT_eSPI is installed.<br>
-This will tell the TFT_eSPI library which pins and other configurations to use.<br>
+This will tell the TFT_eSPI library which pins and other configurations to use.<br><br>
 Edit the User_Setup_Select.h file in the TFT_eSPI library folder and add the line <br>
    #include <User_Setup_CYD_ILI9341.h>  <br>
 while commenting out any other #include lines for other User_Setup files (only one user setup file should be included). <br><br>
