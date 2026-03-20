@@ -24,8 +24,8 @@ void displayInit() {
   // Set touch calibration data for FNK0103L_3P2
   // Format: {x_min, x_max, y_min, y_max, rotation}
   // Calibrated for landscape mode (rotation 1)
-  uint16_t calData[5] = { 300, 3600, 400, 3600, 1 };
-  tft.setTouch(calData);
+  //uint16_t calData[5] = { 300, 3600, 400, 3600, 1 };
+  //tft.setTouch(calData);
 
   tft.fillScreen(TFT_BLACK);
 
