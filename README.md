@@ -7,7 +7,7 @@ The original project assumed both were using the same SPI bus
 <br><br>
 To use:<br><br>
 
-Copy the file User_Setup_CYD_ILI9341.h to the Arduino library folder where TFT_eSPI is installed.<br>
+Copy the file User_Setup_CYD_ILI9341.h from the sketch folder to the Arduino library folder where TFT_eSPI is installed.<br>
 This will tell the TFT_eSPI library which pins and other configurations to use.<br>
 Edit the User_Setup_Select.h file in the TFT_eSPI library folder and add the line <br>
    #include <User_Setup_CYD_ILI9341.h>  <br>
