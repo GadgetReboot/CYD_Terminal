@@ -4,6 +4,11 @@ It was changed as needed to use the ILI9341 display instead of ST7789 and to
 allow different SPI pins for the display driver and the touch interface controller
 The original project assumed both were using the same SPI bus
 
+Tested in Arduino IDE 2.3.4 with 
+  Espressif ESP32 board file v3.2.1
+  TFT_eSPI library v2.5.43
+
+
  * CYD Terminal - UART Terminal with ESC sequences support
  * Board: ESP32 CYD (Cheap Yellow Display) 
  * Display: ILI9341
@@ -13,7 +18,7 @@ The original project assumed both were using the same SPI bus
  * - Touch-based baud rate selection
  * - On-screen keyboard (BOOT button to toggle)
  * - USB or External UART selection
- * - Modular design for easy expansion
+
  */
 
 #include "config.h"
