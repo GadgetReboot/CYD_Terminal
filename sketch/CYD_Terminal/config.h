@@ -1,5 +1,5 @@
 /*
- * config.h - Hardware configuration for CYD FNK0103L_3P2
+ * config.h - Hardware configuration for CYD
  */
 
 #ifndef CONFIG_H
@@ -41,7 +41,7 @@
 // Terminal settings
 #define TERMINAL_COLS 53  // Characters per line (6px font)
 #define TERMINAL_ROWS 27  // Lines visible on screen (8px font)
-#define TERMINAL_BUFFER_ROWS 100  // Total buffer lines
+#define TERMINAL_BUFFER_ROWS 300  // Scrollback buffer (uint16_t = 31 KB for 300 rows)
 #define TERMINAL_START_Y 22  // Start below status bar
 #define TERMINAL_BUFFER_SIZE 2048
 

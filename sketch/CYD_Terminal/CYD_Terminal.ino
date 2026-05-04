@@ -9,15 +9,16 @@ Tested in Arduino IDE 2.3.4 with
   TFT_eSPI library v2.5.43
 
 
- * CYD Terminal - UART Terminal with ESC sequences support
- * Board: ESP32 CYD (Cheap Yellow Display) 
- * Display: ILI9341
- * 
- * Features:
- * - UART Terminal with basic VT100/ANSI escape sequences
- * - Touch-based baud rate selection
- * - On-screen keyboard (BOOT button to toggle)
- * - USB or External UART selection
+  CYD Terminal - UART Terminal with ESC sequences support
+  Board: ESP32 CYD (Cheap Yellow Display) 
+  Display: ILI9341
+  
+  Features:
+  - UART Terminal with basic VT100/ANSI escape sequences
+  - Touch-based baud rate selection
+  - On-screen keyboard (BOOT button to toggle)
+  - USB or External UART selection
+  - Plotter for incoming numerical data
 
  */
 
@@ -27,6 +28,7 @@ Tested in Arduino IDE 2.3.4 with
 #include "keyboard.h"
 #include "utf8.h"
 #include "sdcard.h"
+#include "plotter.h"
 #include <Preferences.h>
 
 Preferences preferences;
@@ -34,6 +36,8 @@ Preferences preferences;
 // Current mode
 bool keyboardVisible = false;
 bool inSetupMode = true;
+bool plotterMode = false;  // false = terminal text, true = serial plotter
+bool displayPaused = false; // true = incoming data not rendered (still drained)
 int selectedBaudRate = 4;            // Default 115200
 int uartMode = 0;                    // 0 = USB, 1 = External
 bool sdAutoRecord = SD_AUTO_RECORD;  // Auto-start recording
@@ -203,8 +207,26 @@ void loop() {
       lastRxTxUpdate = millis();
     }
 
-    // Handle incoming UART data
-    terminalUpdate();
+    // Handle incoming UART data (routed to terminal or plotter).
+    // When paused we still drain the UART so the hardware FIFO never overflows,
+    // but we skip all rendering so the display stays frozen.
+    if (plotterMode) {
+      if (!displayPaused) {
+        plotterUpdate();
+      } else {
+        // Drain serial silently to prevent FIFO overflow
+        HardwareSerial* ser = terminalGetSerial();
+        if (ser) { while (ser->available()) ser->read(); }
+      }
+    } else {
+      if (!displayPaused) {
+        terminalUpdate();
+      } else {
+        // Drain serial silently to prevent FIFO overflow
+        HardwareSerial* ser = terminalGetSerial();
+        if (ser) { while (ser->available()) ser->read(); }
+      }
+    }
 
     // Flush SD card buffer periodically
     sdFlush();
@@ -216,12 +238,23 @@ void loop() {
     // Check for REC icon tap (works regardless of keyboard state)
     handleRecIconTouch();
 
-    // Then handle keyboard or terminal touches
-    if (keyboardVisible) {
-      handleKeyboardTouch();
+    // Check for pause/play button tap
+    handlePauseButtonTouch();
+
+    // Check for PLOT button tap
+    handlePlotButtonTouch();
+
+    if (plotterMode) {
+      // Let the plotter handle all remaining touches
+      plotterHandleTouch();
     } else {
-      // When keyboard is hidden, handle terminal area touch for scrolling
-      handleTerminalScrollTouch();
+      // Then handle keyboard or terminal touches
+      if (keyboardVisible) {
+        handleKeyboardTouch();
+      } else {
+        // When keyboard is hidden, handle terminal area touch for scrolling
+        handleTerminalScrollTouch();
+      }
     }
   }
 
@@ -426,15 +459,28 @@ void drawStatusBar() {
   // RX/TX indicators (after baud rate)
   drawRxTxIndicators(80, 6);
 
-  // REC icon (between RX/TX and keyboard)
+  // Pause/play button (immediately after TX indicator, x=113)
+  drawPausePlayButton(113, 4);
+
+  // REC icon (before PLOT button)
   drawRecIcon(155, 4);
 
-  // Keyboard icon (right side)
-  drawKeyboardIcon(230, 4);
+  // PLOT toggle button (x=193..228, y=2..17)
+  uint16_t plotBtnColor = plotterMode ? TFT_CYAN : TFT_DARKGREY;
+  tft.fillRoundRect(193, 2, 36, 16, 3, plotBtnColor);
+  tft.drawRoundRect(193, 2, 36, 16, 3, TFT_WHITE);
+  tft.setTextSize(1);
+  tft.setTextColor(TFT_BLACK, plotBtnColor);
+  tft.setCursor(197, 6);
+  tft.print("PLOT");
+
+  // Keyboard icon (shifted right to x=234)
+  drawKeyboardIcon(234, 4);
 
   // Battery indicator (far right)
   drawBatteryIcon(260, 4);
 
+  tft.setTextColor(TFT_WHITE, TFT_NAVY);
   tft.setCursor(285, 6);
   tft.print(batteryPercent);
   tft.print("%");
@@ -547,6 +593,42 @@ void drawRxTxIndicators(int x, int y) {
   tft.fillCircle(x + 22, y + 4, 3, txColor);
 }
 
+
+void drawPausePlayButton(int x, int y) {
+  // Button area: 18 px wide, 12 px tall (y..y+11)
+  // Background matches status bar
+  tft.fillRect(x, y, 18, 12, TFT_NAVY);
+
+  if (displayPaused) {
+    // PLAY icon: solid right-pointing triangle in yellow
+    // Vertices: left-top(x,y), left-bottom(x, y+11), right-apex(x+13, y+5)
+    uint16_t col = TFT_YELLOW;
+    for (int row = 0; row <= 11; row++) {
+      // For each pixel row, triangle spans from x to a right edge that
+      // narrows toward the apex. The apex is at row 5 (centre of 0..11).
+      // Use two half-triangles: top half (row 0..5) and bottom (row 6..11).
+      int halfH = 6; // half height (rows 0..5 and 6..11 mirror each other)
+      int dist;      // distance from the nearest edge row
+      if (row <= 5) {
+        dist = row;          // top half: widens toward centre
+      } else {
+        dist = 11 - row;     // bottom half: narrows toward bottom
+      }
+      // Right edge of filled span: scales linearly from x (dist=0) to x+13 (dist=5)
+      int rightEdge = x + (dist * 13) / 5;
+      if (rightEdge >= x) {
+        tft.drawFastHLine(x, y + row, rightEdge - x + 1, col);
+      }
+    }
+  } else {
+    // PAUSE icon: two vertical white bars
+    // Bar 1: x+1 .. x+5  (5px wide), Bar 2: x+8 .. x+12  (5px wide), height 12px
+    uint16_t col = TFT_WHITE;
+    tft.fillRect(x + 1, y,     5, 12, col);
+    tft.fillRect(x + 8, y,     5, 12, col);
+  }
+}
+
 void drawRecIcon(int x, int y) {
   // REC icon - only show if SD card present
   SDStatus sdStatus = sdGetStatus();
@@ -576,6 +658,38 @@ void drawRecIcon(int x, int y) {
   tft.print("REC");
 }
 
+void handlePauseButtonTouch() {
+  static unsigned long lastPauseTouch = 0;
+  static int pauseTouchStartY = -1;
+  static int pauseTouchStartX = -1;
+  static int pauseLastY = -1;
+  uint16_t touchX, touchY;
+
+  if (getTouch(&touchX, &touchY)) {
+    if (pauseLastY == -1) {
+      pauseTouchStartY = touchY;
+      pauseTouchStartX = touchX;
+      pauseLastY = touchY;
+    }
+  } else {
+    if (pauseLastY != -1) {
+      // Tap on pause/play button? (x=113..130, y=0..19)
+      if (pauseTouchStartY >= 0 && pauseTouchStartY <= 19 &&
+          pauseTouchStartX >= 113 && pauseTouchStartX <= 131 &&
+          abs(pauseLastY - pauseTouchStartY) < 5) {
+        if (millis() - lastPauseTouch > 250) {
+          lastPauseTouch = millis();
+          displayPaused = !displayPaused;
+          drawPausePlayButton(113, 4);
+        }
+      }
+    }
+    pauseLastY = -1;
+    pauseTouchStartY = -1;
+    pauseTouchStartX = -1;
+  }
+}
+
 void handleKeyboardIconTouch() {
   static unsigned long lastKeyboardIconTouch = 0;
   static int iconTouchStartY = -1;
@@ -595,7 +709,7 @@ void handleKeyboardIconTouch() {
     if (iconLastTouchY != -1) {
       // Check if this was a tap on keyboard icon (status bar, no big movement)
       // Icon is at X=230, width=22, so range is 230-252
-      if (iconTouchStartY >= 0 && iconTouchStartY <= 20 && iconTouchStartX >= 230 && iconTouchStartX <= 252 && abs(iconLastTouchY - iconTouchStartY) < 5) {
+      if (iconTouchStartY >= 0 && iconTouchStartY <= 20 && iconTouchStartX >= 234 && iconTouchStartX <= 256 && abs(iconLastTouchY - iconTouchStartY) < 5) {
         // Tapped keyboard icon
         if (millis() - lastKeyboardIconTouch > 200) {
           lastKeyboardIconTouch = millis();
@@ -705,6 +819,52 @@ void handleTerminalScrollTouch() {
     lastTouchY = -1;
     touchStartY = -1;
     touchStartX = -1;
+  }
+}
+
+void handlePlotButtonTouch() {
+  static unsigned long lastPlotTouch = 0;
+  static int plotTouchStartY = -1;
+  static int plotTouchStartX = -1;
+  static int plotLastY = -1;
+  uint16_t touchX, touchY;
+
+  if (getTouch(&touchX, &touchY)) {
+    if (plotLastY == -1) {
+      plotTouchStartY = touchY;
+      plotTouchStartX = touchX;
+      plotLastY = touchY;
+    }
+  } else {
+    if (plotLastY != -1) {
+      // Tap on PLOT button? (x=193..228, y=0..19)
+      if (plotTouchStartY >= 0 && plotTouchStartY <= 19 &&
+          plotTouchStartX >= 193 && plotTouchStartX <= 229 &&
+          abs(plotLastY - plotTouchStartY) < 5) {
+        if (millis() - lastPlotTouch > 250) {
+          lastPlotTouch = millis();
+          plotterMode = !plotterMode;
+
+          if (plotterMode) {
+            // Enter plotter mode – hide keyboard first if visible
+            if (keyboardVisible) {
+              keyboardVisible = false;
+            }
+            tft.fillRect(0, 20, SCREEN_WIDTH, SCREEN_HEIGHT - 20, TFT_BLACK);
+            plotterInit(terminalGetSerial());
+          } else {
+            // Return to terminal mode
+            plotterExit();
+            tft.fillRect(0, 20, SCREEN_WIDTH, SCREEN_HEIGHT - 20, TFT_BLACK);
+            terminalRedraw();
+          }
+          drawStatusBar();
+        }
+      }
+    }
+    plotLastY = -1;
+    plotTouchStartY = -1;
+    plotTouchStartX = -1;
   }
 }
 

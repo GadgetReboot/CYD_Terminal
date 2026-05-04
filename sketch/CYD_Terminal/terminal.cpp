@@ -20,8 +20,11 @@ static int currentBaudRate = 115200;
 static int currentMode = 0; // 0 = USB, 1 = External
 static HardwareSerial* terminalSerial = nullptr;
 
-// Screen buffer - now stores Unicode codepoints with scrollback
-static uint32_t screenBuffer[TERMINAL_BUFFER_ROWS][TERMINAL_COLS];
+// Screen buffer - stores Unicode codepoints with scrollback.
+// uint16_t covers the full Basic Multilingual Plane (U+0000..U+FFFF),
+// including ASCII, Latin, and Cyrillic. Half the RAM of uint32_t,
+// making a larger scrollback practical at no other cost.
+static uint16_t screenBuffer[TERMINAL_BUFFER_ROWS][TERMINAL_COLS];
 static int cursorX = 0;
 static int cursorY = 0;
 static int scrollOffset = 0;  // Current scroll position (0 = bottom)
@@ -59,15 +62,21 @@ void terminalInit(int baudRateIndex, int mode) {
   cursorX = 0;
   cursorY = 0;
   scrollOffset = 0;
-  totalLines = 0;
+  totalLines = 1;  // Row 0 exists as the initial cursor line
   
   // Initialize UART
+  // Set a large software RX ring buffer BEFORE begin() so burst data
+  // (e.g. plotter sine-wave at 115200 baud) never overflows.
+  // The ESP32 hardware FIFO is only 128 bytes; the default software buffer
+  // is 256 bytes – both far too small for back-to-back float strings.
   if (currentMode == 0) {
     // USB UART (Serial)
+    Serial.setRxBufferSize(2048);
     Serial.begin(currentBaudRate);
     terminalSerial = &Serial;
   } else {
     // External UART on GPIO3/1
+    Serial2.setRxBufferSize(2048);
     Serial2.begin(currentBaudRate, SERIAL_8N1, UART_RX, UART_TX);
     terminalSerial = &Serial2;
   }
@@ -299,46 +308,36 @@ void putChar(uint32_t codepoint) {
     cursorX = 0;
   } else if (codepoint == '\n') {
     cursorX = 0;  // Reset to start of line first
-    cursorY++;
-    
-    // Clear the new line we just moved to
-    if (cursorY < TERMINAL_BUFFER_ROWS) {
+
+    // Check if we need to scroll (circular buffer wrap)
+    if (cursorY >= TERMINAL_BUFFER_ROWS - 1) {
+      // Buffer is full - use scrollUp() which advances totalLines and
+      // moves cursorY to the next circular slot.
+      scrollUp(); // clears next line, sets cursorY, increments totalLines
+    } else {
+      cursorY++;
+
+      // Clear the new line we just moved to
       for (int x = 0; x < TERMINAL_COLS; x++) {
         screenBuffer[cursorY][x] = ' ';
       }
+
+      // Always keep totalLines up to date so terminalRedraw() shows the
+      // correct window.  This must happen in BOTH the pre-full and the
+      // post-full (circular) phases.
+      totalLines++;
     }
-    
-    // Update totalLines to reflect actual content INCLUDING the new cursor line
-    if (totalLines < TERMINAL_BUFFER_ROWS) {
-      // Buffer not full yet, totalLines = number of lines including cursor line
-      if (cursorY >= totalLines) {
-        totalLines = cursorY + 1;  // +1 to include the cursor line
-      }
-    }
-    
-    // Check if we need to scroll
-    if (cursorY >= TERMINAL_BUFFER_ROWS) {
-      cursorY = TERMINAL_BUFFER_ROWS - 1; // Will be updated in scrollUp
-      scrollUp(); // This clears next line, moves cursor, and increments totalLines
-      
-      // After scrollUp, ensure cursor is visible
-      ensureCursorVisible();
-      
-      // If no keyboard, just redraw
-      extern bool keyboardVisible;
-      if (!keyboardVisible) {
-        terminalRedraw();
-      }
-    } else {
-      // Just moved to a new line
-      // Ensure cursor stays visible if keyboard is open
-      ensureCursorVisible();
-      
-      // If no keyboard, just redraw
-      extern bool keyboardVisible;
-      if (!keyboardVisible) {
-        terminalRedraw();
-      }
+
+    // Ensure cursor is visible (handles keyboard-visible scroll adjustment).
+    // ensureCursorVisible() calls terminalRedraw() only when the keyboard is
+    // open and the scroll offset needs changing, so we still need to call
+    // terminalRedraw() ourselves for the normal (no-keyboard) case.
+    ensureCursorVisible();
+
+    // If no keyboard, redraw to show the new line
+    extern bool keyboardVisible;
+    if (!keyboardVisible) {
+      terminalRedraw();
     }
   } else if (codepoint == '\b') {
     if (cursorX > 0) {
@@ -379,7 +378,7 @@ void putChar(uint32_t codepoint) {
     }
   } else if (codepoint >= 32) {
     // Printable character (ASCII or Unicode)
-    screenBuffer[cursorY][cursorX] = codepoint;
+    screenBuffer[cursorY][cursorX] = (uint16_t)codepoint; // safe: BMP only (U+0000..FFFF)
     
     // Draw character if cursor line is visible
     extern bool keyboardVisible;
@@ -425,37 +424,26 @@ void putChar(uint32_t codepoint) {
     
     if (cursorX >= TERMINAL_COLS) {
       cursorX = 0;
-      cursorY++;
-      
-      // Clear the new line we just moved to
-      if (cursorY < TERMINAL_BUFFER_ROWS) {
+
+      if (cursorY >= TERMINAL_BUFFER_ROWS - 1) {
+        // Circular buffer is full - same path as '\n' overflow
+        scrollUp(); // clears next slot, advances cursorY and totalLines
+      } else {
+        cursorY++;
+
+        // Clear the new line
         for (int x = 0; x < TERMINAL_COLS; x++) {
           screenBuffer[cursorY][x] = ' ';
         }
+
+        totalLines++;
       }
-      
-      // Update totalLines to include the new cursor line
-      if (totalLines < TERMINAL_BUFFER_ROWS) {
-        if (cursorY >= totalLines) {
-          totalLines = cursorY + 1;  // +1 to include the cursor line
-        }
-      }
-      
-      if (cursorY >= TERMINAL_BUFFER_ROWS) {
-        cursorY = TERMINAL_BUFFER_ROWS - 1; // Will be updated in scrollUp
-        scrollUp();
-        
-        // After scrollUp, ensure cursor is visible
-        ensureCursorVisible();
-        
-        // If no keyboard, just redraw
-        extern bool keyboardVisible;
-        if (!keyboardVisible) {
-          terminalRedraw();
-        }
-      } else {
-        // Just wrapped to new line, ensure cursor stays visible
-        ensureCursorVisible();
+
+      ensureCursorVisible();
+
+      extern bool keyboardVisible;
+      if (!keyboardVisible) {
+        terminalRedraw();
       }
     }
   }
@@ -570,18 +558,29 @@ void processEscSequence() {
 }
 
 void terminalUpdate() {
-  if (terminalSerial && terminalSerial->available()) {
+  if (!terminalSerial) return;
+
+  // Process up to MAX_BYTES_PER_UPDATE bytes per call.
+  // Draining multiple bytes per loop iteration keeps the display updating
+  // smoothly at high baud rates without starving the rest of loop().
+  // At 115200 baud bytes arrive at ~11.5/ms; processing 64 per call at a
+  // typical loop rate of a few hundred Hz is more than enough to keep up.
+  const int MAX_BYTES_PER_UPDATE = 64;
+  int processed = 0;
+
+  while (processed < MAX_BYTES_PER_UPDATE && terminalSerial->available()) {
     // Mark RX activity (external variable from main)
     extern unsigned long lastRxTime;
     lastRxTime = millis();
-    
+
     uint8_t byte = terminalSerial->read();
-    
+    processed++;
+
     if (inEscSequence) {
       // Collecting ESC sequence
       if (escIndex < sizeof(escBuffer) - 1) {
         escBuffer[escIndex++] = byte;
-        
+
         // Check if sequence is complete
         if ((byte >= 'A' && byte <= 'Z') || (byte >= 'a' && byte <= 'z')) {
           processEscSequence();
@@ -600,10 +599,10 @@ void terminalUpdate() {
       if (utf8Decode(&utf8Decoder, byte)) {
         uint32_t codepoint = utf8GetCodepoint(&utf8Decoder);
         // Serial.printf("Received codepoint: U+%04X\n", codepoint);
-        
+
         // Log to SD after successful UTF-8 decoding
         sdLogRXCodepoint(codepoint);
-        
+
         putChar(codepoint);
         utf8Init(&utf8Decoder); // Reset for next character
       }
@@ -710,7 +709,7 @@ void terminalClear() {
   cursorX = 0;
   cursorY = 0;
   scrollOffset = 0;
-  totalLines = 0;
+  totalLines = 1;  // Row 0 exists as the initial cursor line
   
   // Clear screen
   tft.fillRect(0, TERMINAL_START_Y, SCREEN_WIDTH, SCREEN_HEIGHT - TERMINAL_START_Y, bgColor);
@@ -723,6 +722,14 @@ void terminalReset() {
   bgColor = TFT_BLACK;
 }
 
+// Returns the number of lines actually held in the circular buffer.
+// totalLines grows without bound (it is the global write counter), but only
+// TERMINAL_BUFFER_ROWS slots are stored.  Every scroll calculation must use
+// this capped value so the scroll range and scrollbar thumb match reality.
+static inline int bufferedLines() {
+  return (totalLines < TERMINAL_BUFFER_ROWS) ? totalLines : TERMINAL_BUFFER_ROWS;
+}
+
 void drawScrollbar(int maxY) {
   // Scrollbar on right side of screen
   const int scrollbarX = SCREEN_WIDTH - 4;
@@ -732,42 +739,43 @@ void drawScrollbar(int maxY) {
   // Background track
   tft.fillRect(scrollbarX, TERMINAL_START_Y, scrollbarWidth, scrollbarHeight, TFT_DARKGREY);
   
-  // Calculate thumb position and size
-  int totalContentHeight = totalLines * 8;
+  // Calculate thumb size and position based on actually-buffered lines only.
+  // bufferedLines() is capped at TERMINAL_BUFFER_ROWS so the thumb never
+  // implies more history than we can actually scroll back through.
+  int bufLines = bufferedLines();
+  int visibleRows = scrollbarHeight / 8;       // how many text rows fit on screen
+  int totalContentHeight = bufLines * 8;
   int visibleHeight = scrollbarHeight;
-  
+
   if (totalContentHeight > visibleHeight) {
-    // Thumb size proportional to visible content
+    // Thumb height proportional to (visible / total) buffered content
     int thumbHeight = (visibleHeight * visibleHeight) / totalContentHeight;
-    if (thumbHeight < 10) thumbHeight = 10; // Minimum thumb size
-    
-    // Thumb position based on scroll offset
-    // scrollOffset = 0 means at bottom (most recent), thumb should be at bottom
-    // scrollOffset = maxScroll means at top (oldest), thumb should be at top
-    int maxScroll = totalLines - (visibleHeight / 8);
+    if (thumbHeight < 10) thumbHeight = 10;
+
+    // maxScroll: how many lines we can scroll back (same cap)
+    int maxScroll = bufLines - visibleRows;
     if (maxScroll < 1) maxScroll = 1;
-    
+
     int thumbRange = visibleHeight - thumbHeight;
-    
-    // Invert: when scrollOffset=0 (bottom), thumbY should be at bottom of track
-    // when scrollOffset=maxScroll (top), thumbY should be at top of track
+
+    // Invert: scrollOffset=0 → thumb at bottom; scrollOffset=maxScroll → thumb at top
     int thumbY = TERMINAL_START_Y + thumbRange - (thumbRange * scrollOffset) / maxScroll;
-    
-    // Draw thumb
+
     tft.fillRect(scrollbarX, thumbY, scrollbarWidth, thumbHeight, TFT_GREEN);
   }
 }
 
 void terminalScroll(int delta) {
   scrollOffset += delta;
-  
-  // Limit scroll range
-  int maxScroll = totalLines - TERMINAL_ROWS;
+
+  // Cap scroll to the lines actually held in the buffer, not the unbounded
+  // totalLines counter.  This prevents swiping past real history.
+  int maxScroll = bufferedLines() - TERMINAL_ROWS;
   if (maxScroll < 0) maxScroll = 0;
-  
+
   if (scrollOffset < 0) scrollOffset = 0;
   if (scrollOffset > maxScroll) scrollOffset = maxScroll;
-  
+
   terminalRedraw();
 }
 
@@ -776,7 +784,7 @@ int terminalGetScrollOffset() {
 }
 
 int terminalGetMaxScroll() {
-  int maxScroll = totalLines - TERMINAL_ROWS;
+  int maxScroll = bufferedLines() - TERMINAL_ROWS;
   return maxScroll > 0 ? maxScroll : 0;
 }
 
@@ -787,6 +795,10 @@ void terminalScrollToBottom() {
 
 int terminalGetCursorY() {
   return cursorY;
+}
+
+HardwareSerial* terminalGetSerial() {
+  return terminalSerial;
 }
 
 void terminalScrollForKeyboard(bool keyboardVisible) {

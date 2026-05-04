@@ -19,7 +19,7 @@ void displayInit() {
   // Initialize TFT
   tft.init();
   tft.setRotation(1);  // Landscape mode
-  tft.invertDisplay( true );  // uncomment if display has inverted colors from expected ones
+  //tft.invertDisplay( true );  // uncomment if display has inverted colors from expected ones
 
   // Set touch calibration data for FNK0103L_3P2
   // Format: {x_min, x_max, y_min, y_max, rotation}

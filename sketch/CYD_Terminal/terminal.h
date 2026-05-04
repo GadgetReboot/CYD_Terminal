@@ -42,4 +42,8 @@ void terminalScrollForKeyboard(bool keyboardVisible);
 // Get cursor position
 int terminalGetCursorY();
 
+// Returns the HardwareSerial* opened by terminalInit() so the plotter
+// can share the same UART without re-opening it.
+HardwareSerial* terminalGetSerial();
+
 #endif
